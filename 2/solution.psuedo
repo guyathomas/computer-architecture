@@ -1,0 +1,97 @@
+source code:
+  
+  .text
+  load_word reg_a x
+  load_word reg_b y
+  add reg_a reg_b
+  store_word reg_a out
+  halt
+  .data
+  out: .int 0
+  x:   .int 2
+  y:   .int 3
+
+  assembles to:
+
+  memory
+  01 01 10 01 02 12 02 01 02 03 01 0e 04 00 00 00 02 00 03 00
+                                            ^out  ^x    ^y
+  ^text                                     ^data 
+
+// Split on whitespace
+// Iterate through each item
+// Create an array of all the categorised tokens based on {class: token_class, value: value}
+// 
+
+def assemble(source)
+
+  instructions = { load_word: 0x01, add: 0x02, store_word: 0x03, halt: 0x04 }
+  instruction_params = (name) =>
+    case name
+    when 'load_word': [ 'reg', 'label' ]
+    when 'store_word': [ 'reg', 'label' ]
+    when 'add': [ 'reg', 'reg' ]
+    when 'halt': []
+
+  registers = { a: 0x01, b: 0x02 }
+  directives = Set({ '.text', '.data', '.int' })
+  token_class = (val) =>
+    case val
+    when in directives      : val.slice(1) + '_directive'
+    when in instructions    : 'instruction'
+    when starts with 'reg_' : 'register'
+    when ends with ':'      : 'label_declaration'
+    when is number          : 'number'
+    else                    : 'label_reference'
+
+  mem = Array(20) // output program
+  code_start = 0, data_start = 0x0e
+  mem_pos = { code: code_start, data: data_start }
+  section = 'code' // current section
+  refs = new List // (location, name), (location, name), ...
+  decs = new Map // label_name => location_of_labelled_value
+
+  // first pass: assemble, build refs and decs
+
+  tokens = source.split(whitespace).map((val) => {class: token_class(val), val})
+  token_pos = 0
+  lookhead = () =>
+    if token_pos == tokens.length then 'EOF' else tokens[token_pos].class
+  consume = (expected_class?) =>
+    {class:actual_class, value} = tokens[token_pos++]
+    if expected_class and actual_class isnt expected_class
+      raise "expected token ${v} to be of class ${expected_class} but was ${actual_class}"
+    return value
+
+  while lookahead() isnt 'EOF'
+    case lookahead()
+    when 'text_directive'
+      section = 'code'
+      consume()
+    when 'data_directive'
+      section = 'data'
+      consume()
+    when 'label_declaration'
+      decs.set(consume().slice(1), mem_pos[section]) // e.g. 'x' => 42
+    when 'int_directive'
+      consume() // skip '.int'
+      num = consume('number')
+      mem[mem_pos[section]++] = little_end(num)
+      mem[mem_pos[section]++] = big_end(num)
+    when 'instruction'
+      let name = consume() // e.g. 'load_word'
+      mem[mem_pos[section]++] = instructions.get(name) // byte val of instruction
+      for param_name in instruction_params(name) // e.g. ['reg', 'label']
+        case param_name
+        when 'reg'
+          mem[mem_pos[section]++] = registers.get(consume(param_name))
+        when 'label'
+          refs.push([mem_pos[section], consume(param)]) // e.g. [12, 'x']
+          mem_pos[section]++ // leave gap to fill in with address later
+
+  // second pass: fill in refs from decs
+  for [target_location, name] in refs
+    value = decs.get(name) or raise "no label declaration for ${name}"
+    mem[target_location] = value
+
+  return mem
